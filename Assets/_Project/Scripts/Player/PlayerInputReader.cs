@@ -23,11 +23,13 @@ namespace MissDirection.Player
     /// </summary>
     public class PlayerInputReader : MonoBehaviour
     {
-        [Tooltip("Degrees per pixel of mouse movement (new Input System).")]
+#if ENABLE_INPUT_SYSTEM
+        [Tooltip("Degrees per pixel of mouse movement.")]
         [SerializeField] float mouseSensitivity = 0.1f;
-
-        [Tooltip("Multiplier for mouse axes (old Input Manager).")]
+#else
+        [Tooltip("Multiplier for the old Input Manager's mouse axes.")]
         [SerializeField] float legacyLookScale = 2f;
+#endif
 
         public InputFrame Read()
         {

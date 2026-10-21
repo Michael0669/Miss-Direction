@@ -49,6 +49,9 @@ namespace MissDirection.Player
         public InputFrame CurrentInput => delayedInput;
         public bool IsGrounded { get; private set; }
         public float Yaw => yaw;
+        public float Pitch => pitch;
+        /// <summary>Where the player is looking, independent of render interpolation.</summary>
+        public Quaternion LookRotation => Quaternion.Euler(pitch, yaw, 0f);
 
         void Awake()
         {
