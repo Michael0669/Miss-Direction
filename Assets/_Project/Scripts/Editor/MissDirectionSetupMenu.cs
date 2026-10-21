@@ -92,11 +92,20 @@ namespace MissDirection.EditorTools
         {
             if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
 
-            var deck = CreateStarterFortunes();
-            var cardPrefab = CreateCardPrefab();
-
             EnsureFolder(SceneFolder);
             var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+
+            // Create the assets AFTER opening the new scene: opening a scene unloads assets nothing
+            // references yet, which used to leave the machine with an empty deck and no card.
+            CreateStarterFortunes();
+            CreateCardPrefab();
+            AssetDatabase.SaveAssets();
+            var deck = AssetDatabase.LoadAssetAtPath<FortuneDeck>(DeckPath);
+            var cardPrefabRoot = AssetDatabase.LoadAssetAtPath<GameObject>(CardPrefabPath);
+            var cardPrefab = cardPrefabRoot != null ? cardPrefabRoot.GetComponent<FortuneCard>() : null;
+            if (deck == null || cardPrefab == null)
+                Debug.LogError("Miss Direction: couldn't load the starter deck or card prefab. Try the menu again.");
+
             var defaultCamera = Camera.main;
             if (defaultCamera != null) Object.DestroyImmediate(defaultCamera.gameObject);
 

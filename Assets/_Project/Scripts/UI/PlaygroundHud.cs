@@ -101,6 +101,7 @@ namespace MissDirection.UI
         string Objective()
         {
             if (machine == null) return "No Fortune Machine in this scene.";
+            if (!machine.HasDeck) return "The Fortune Machine has no deck! Re-run Miss Direction > Build Test Playground Scene.";
             switch (machine.State)
             {
                 case FortuneMachine.MachineState.Reading:

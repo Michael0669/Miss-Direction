@@ -4173,8 +4173,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f043d2449fe07ee47a55fc909c419993, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MissDirection.Fortunes.FortuneMachine
-  deck: {fileID: 0}
-  cardPrefab: {fileID: 0}
+  deck: {fileID: 11400000, guid: 451a25d2881d1f341929aa77d7854efd, type: 2}
+  cardPrefab: {fileID: 105186758724659812, guid: d899a17d17c29f34797cf58ccae932b5, type: 3}
   cardSlot: {fileID: 1962008676}
   teamSize: 1
   revealSeconds: 0.4

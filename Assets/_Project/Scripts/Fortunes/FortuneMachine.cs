@@ -39,6 +39,7 @@ namespace MissDirection.Fortunes
         public enum MachineState { Ready, Reading, Revealed, CardWaiting, Done }
 
         public bool IsBusy { get; private set; }
+        public bool HasDeck => deck != null && deck.fortunes.Count > 0;
         public int TeamSize => teamSize;
         public bool AllCardsClaimed => claimed.Count >= teamSize;
 
@@ -79,7 +80,13 @@ namespace MissDirection.Fortunes
 
         public bool TryPress(PlayerFortunes presser)
         {
-            if (presser == null || deck == null) return false;
+            if (presser == null) return false;
+            if (deck == null)
+            {
+                Debug.LogError("Fortune Machine has no deck assigned. Run Miss Direction > Build Test Playground Scene again, " +
+                               "or drag StarterDeck onto the FortuneMachine's Deck field.", this);
+                return false;
+            }
 
             if (IsBusy)
             {
