@@ -1,6 +1,11 @@
 using System.IO;
+using System.Collections.Generic;
 using MissDirection.Fortunes;
+using MissDirection.Networking;
 using MissDirection.Player;
+using Unity.Netcode;
+using Unity.Netcode.Components;
+using Unity.Netcode.Transports.UTP;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -17,6 +22,7 @@ namespace MissDirection.EditorTools
         const string DeckPath = FortuneFolder + "/StarterDeck.asset";
         const string PrefabFolder = "Assets/_Project/Prefabs";
         const string CardPrefabPath = PrefabFolder + "/FortuneCard.prefab";
+        const string PlayerPrefabPath = PrefabFolder + "/Player.prefab";
         const string SceneFolder = "Assets/_Project/Scenes";
         const string PlaygroundPath = SceneFolder + "/Playground.unity";
 
@@ -99,12 +105,14 @@ namespace MissDirection.EditorTools
             // references yet, which used to leave the machine with an empty deck and no card.
             CreateStarterFortunes();
             CreateCardPrefab();
+            CreatePlayerPrefab();
             AssetDatabase.SaveAssets();
             var deck = AssetDatabase.LoadAssetAtPath<FortuneDeck>(DeckPath);
             var cardPrefabRoot = AssetDatabase.LoadAssetAtPath<GameObject>(CardPrefabPath);
             var cardPrefab = cardPrefabRoot != null ? cardPrefabRoot.GetComponent<FortuneCard>() : null;
-            if (deck == null || cardPrefab == null)
-                Debug.LogError("Miss Direction: couldn't load the starter deck or card prefab. Try the menu again.");
+            var playerPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(PlayerPrefabPath);
+            if (deck == null || cardPrefab == null || playerPrefab == null)
+                Debug.LogError("Miss Direction: couldn't load the starter deck, card or player prefab. Try the menu again.");
 
             var defaultCamera = Camera.main;
             if (defaultCamera != null) Object.DestroyImmediate(defaultCamera.gameObject);
@@ -116,11 +124,20 @@ namespace MissDirection.EditorTools
             BuildDecorations();
             BuildPlayArea();
             BuildMachine(deck, cardPrefab);
-            BuildPlayer(new Vector3(0f, 0.05f, -4f));
+            BuildSpawnArea(new Vector3(0f, 0.05f, -4f));
+            BuildLobbyCamera();
+            BuildNetworkManager(playerPrefab);
 
             EditorSceneManager.SaveScene(scene, PlaygroundPath);
+            AddSceneToBuild(PlaygroundPath);
+
+            // Reopen and save once more so every networked object gets its saved network ID
+            // (Netcode can only generate it for objects in a scene that already exists on disk).
+            var reopened = EditorSceneManager.OpenScene(PlaygroundPath, OpenSceneMode.Single);
+            EditorSceneManager.MarkSceneDirty(reopened);
+            EditorSceneManager.SaveScene(reopened);
             AssetDatabase.SaveAssets();
-            Debug.Log("Miss Direction: Playground built. Press Play and follow the banner at the top of the screen.");
+            Debug.Log("Miss Direction: Playground built. Press Play, then HOST A GAME (or JOIN one).");
         }
 
         static void BuildGround()
@@ -187,8 +204,18 @@ namespace MissDirection.EditorTools
                 box.name = $"Crate {i + 1}";
                 box.transform.position = new Vector3(-5f + i * 0.9f, 0.3f, -1f);
                 box.transform.localScale = Vector3.one * 0.6f;
-                box.AddComponent<Rigidbody>().mass = 5f;
+                var rb = box.AddComponent<Rigidbody>();
+                rb.mass = 5f;
+                rb.interpolation = RigidbodyInterpolation.Interpolate;
                 Paint(box, Mat($"Crate{i}", crateColors[i]));
+
+                // Networked: whoever grabs it gets control of it
+                box.AddComponent<NetworkObject>();
+                var nt = box.AddComponent<NetworkTransform>();
+                nt.AuthorityMode = NetworkTransform.AuthorityModes.Owner;
+                nt.SyncScaleX = nt.SyncScaleY = nt.SyncScaleZ = false;
+                box.AddComponent<NetworkRigidbody>();
+                box.AddComponent<NetworkGrabbable>();
             }
             Label("GRAB & CARRY\n(hold left or right click)", new Vector3(-3.65f, 1.6f, -1f), 0.015f, Gold);
         }
@@ -237,12 +264,12 @@ namespace MissDirection.EditorTools
             lamp.intensity = 4f;
             lamp.transform.position = new Vector3(0f, 3f, 1f);
 
+            root.AddComponent<NetworkObject>();
             var machine = root.AddComponent<FortuneMachine>();
             var machineSo = new SerializedObject(machine);
             machineSo.FindProperty("deck").objectReferenceValue = deck;
             machineSo.FindProperty("cardPrefab").objectReferenceValue = cardPrefab;
             machineSo.FindProperty("cardSlot").objectReferenceValue = slot;
-            machineSo.FindProperty("teamSize").intValue = 1;
             machineSo.ApplyModifiedPropertiesWithoutUndo();
 
             var pressable = button.AddComponent<FortuneMachineButton>();
@@ -261,10 +288,58 @@ namespace MissDirection.EditorTools
             lightsSo.ApplyModifiedPropertiesWithoutUndo();
         }
 
-        static void BuildPlayer(Vector3 position)
+        static void BuildSpawnArea(Vector3 position)
         {
+            var spawn = new GameObject("Player Spawn Area");
+            spawn.transform.position = position;
+            spawn.AddComponent<PlayerSpawnArea>();
+        }
+
+        static void BuildLobbyCamera()
+        {
+            var cam = new GameObject("Lobby Camera", typeof(Camera), typeof(AudioListener));
+            cam.tag = "MainCamera";
+            cam.transform.position = new Vector3(0f, 4.5f, -10f);
+            cam.transform.rotation = Quaternion.Euler(18f, 0f, 0f);
+            cam.AddComponent<LobbyCamera>();
+        }
+
+        static void BuildNetworkManager(GameObject playerPrefab)
+        {
+            var go = new GameObject("NetworkManager");
+            var manager = go.AddComponent<NetworkManager>();
+            var transport = go.AddComponent<UnityTransport>();
+            if (manager.NetworkConfig == null) manager.NetworkConfig = new NetworkConfig();
+
+            manager.NetworkConfig.NetworkTransport = transport;
+            manager.NetworkConfig.PlayerPrefab = playerPrefab;
+            manager.NetworkConfig.ConnectionApproval = true;
+            transport.SetConnectionData("127.0.0.1", 7777);
+
+            go.AddComponent<NetworkLauncher>();
+            EditorUtility.SetDirty(manager);
+        }
+
+        static void AddSceneToBuild(string path)
+        {
+            var scenes = new List<EditorBuildSettingsScene>(EditorBuildSettings.scenes);
+            scenes.RemoveAll(s => s.path == path);
+            scenes.Insert(0, new EditorBuildSettingsScene(path, true));
+            EditorBuildSettings.scenes = scenes.ToArray();
+        }
+
+        /// <summary>
+        /// The networked player. Netcode spawns one of these for everyone who joins.
+        /// Rebuilt every time so it always matches the latest scripts.
+        /// </summary>
+        static void CreatePlayerPrefab()
+        {
+            EnsureFolder(PrefabFolder);
+
             var player = new GameObject("Player");
-            player.transform.position = position;
+
+            // Networking first: everything below talks to it
+            player.AddComponent<NetworkObject>();
 
             var capsule = player.AddComponent<CapsuleCollider>();
             capsule.center = new Vector3(0f, 1f, 0f);
@@ -277,18 +352,43 @@ namespace MissDirection.EditorTools
             body.interpolation = RigidbodyInterpolation.Interpolate;
             body.collisionDetectionMode = CollisionDetectionMode.Continuous;
 
-            player.AddComponent<PlayerModifiers>();
-            player.AddComponent<PlayerInputReader>();
-            player.AddComponent<PlayerFortunes>();
+            // Each player moves their own body; others see it smoothly (yaw only, no scale)
+            var nt = player.AddComponent<NetworkTransform>();
+            nt.AuthorityMode = NetworkTransform.AuthorityModes.Owner;
+            nt.SyncRotAngleX = false;
+            nt.SyncRotAngleZ = false;
+            nt.SyncScaleX = nt.SyncScaleY = nt.SyncScaleZ = false;
+            player.AddComponent<NetworkRigidbody>();
 
-            var visual = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            visual.name = "Body";
-            Object.DestroyImmediate(visual.GetComponent<Collider>());
-            visual.transform.SetParent(player.transform, false);
-            visual.transform.localPosition = new Vector3(0f, 1f, 0f);
-            visual.transform.localScale = new Vector3(0.8f, 1f, 0.8f);
-            Paint(visual, Mat("Teal", Teal));
+            var modifiers = player.AddComponent<PlayerModifiers>();
+            var input = player.AddComponent<PlayerInputReader>();
+            var fortunes = player.AddComponent<PlayerFortunes>();
 
+            // Visible body (others see it; you only see its shadow)
+            var visual = new GameObject("Visual").transform;
+            visual.SetParent(player.transform, false);
+
+            var bodyMesh = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            bodyMesh.name = "Body";
+            Object.DestroyImmediate(bodyMesh.GetComponent<Collider>());
+            bodyMesh.transform.SetParent(visual, false);
+            bodyMesh.transform.localPosition = new Vector3(0f, 1f, 0f);
+            bodyMesh.transform.localScale = new Vector3(0.8f, 1f, 0.8f);
+            Paint(bodyMesh, Mat("Teal", Teal));
+
+            var visor = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            visor.name = "Visor (shows which way they face)";
+            Object.DestroyImmediate(visor.GetComponent<Collider>());
+            visor.transform.SetParent(visual, false);
+            visor.transform.localPosition = new Vector3(0f, 1.6f, 0.33f);
+            visor.transform.localScale = new Vector3(0.5f, 0.16f, 0.14f);
+            Paint(visor, Mat("Ink", Ink));
+
+            var nameLabel = CreateTextMesh("Name Tag", "Player", 0.012f, Color.white);
+            nameLabel.transform.SetParent(player.transform, false);
+            nameLabel.transform.localPosition = new Vector3(0f, 2.35f, 0f);
+
+            // Owner-only camera rig
             var pivot = new GameObject("CameraPivot").transform;
             pivot.SetParent(player.transform, false);
             pivot.localPosition = new Vector3(0f, 1.65f, 0f);
@@ -297,20 +397,50 @@ namespace MissDirection.EditorTools
             cameraObject.tag = "MainCamera";
             cameraObject.transform.SetParent(pivot, false);
             cameraObject.GetComponent<Camera>().nearClipPlane = 0.05f;
-            cameraObject.AddComponent<PlayerScreenEffects>();
+            var screenEffects = cameraObject.AddComponent<PlayerScreenEffects>();
+            var effectsSo = new SerializedObject(screenEffects);
+            effectsSo.FindProperty("modifiers").objectReferenceValue = modifiers;
+            effectsSo.ApplyModifiedPropertiesWithoutUndo();
 
             var controller = player.AddComponent<PlayerController>();
             var controllerSo = new SerializedObject(controller);
             controllerSo.FindProperty("cameraPivot").objectReferenceValue = pivot;
             controllerSo.ApplyModifiedPropertiesWithoutUndo();
 
-            player.AddComponent<PlayerGrab>();
+            var grab = player.AddComponent<PlayerGrab>();
+            var grabSo = new SerializedObject(grab);
+            grabSo.FindProperty("viewCamera").objectReferenceValue = cameraObject.GetComponent<Camera>();
+            grabSo.ApplyModifiedPropertiesWithoutUndo();
 
             var hud = player.AddComponent<MissDirection.UI.PlaygroundHud>();
             var hudSo = new SerializedObject(hud);
-            hudSo.FindProperty("player").objectReferenceValue = player.GetComponent<PlayerFortunes>();
+            hudSo.FindProperty("player").objectReferenceValue = fortunes;
             hudSo.FindProperty("viewCamera").objectReferenceValue = cameraObject.GetComponent<Camera>();
             hudSo.ApplyModifiedPropertiesWithoutUndo();
+
+            var network = player.AddComponent<PlayerNetwork>();
+            var networkSo = new SerializedObject(network);
+            networkSo.FindProperty("localOnlyRoot").objectReferenceValue = cameraObject;
+            SetArray(networkSo.FindProperty("localOnlyBehaviours"), controller, grab, input, hud);
+            var bodyRenderer = bodyMesh.GetComponent<Renderer>();
+            var visorRenderer = visor.GetComponent<Renderer>();
+            SetArray(networkSo.FindProperty("bodyRenderers"), bodyRenderer, visorRenderer);
+            SetArray(networkSo.FindProperty("tintedRenderers"), bodyRenderer);
+            networkSo.FindProperty("nameLabel").objectReferenceValue = nameLabel;
+            networkSo.ApplyModifiedPropertiesWithoutUndo();
+
+            PrefabUtility.SaveAsPrefabAsset(player, PlayerPrefabPath);
+            Object.DestroyImmediate(player);
+
+            // Load and re-save so Netcode stamps the prefab with its network ID
+            AssetDatabase.ForceReserializeAssets(new[] { PlayerPrefabPath });
+        }
+
+        static void SetArray(SerializedProperty property, params Object[] values)
+        {
+            property.arraySize = values.Length;
+            for (int i = 0; i < values.Length; i++)
+                property.GetArrayElementAtIndex(i).objectReferenceValue = values[i];
         }
 
         /// <summary>Rebuilt every time so older versions of the card get replaced.</summary>

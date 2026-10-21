@@ -1,10 +1,9 @@
 using MissDirection.Interaction;
-using MissDirection.Player;
 using UnityEngine;
 
 namespace MissDirection.Fortunes
 {
-    /// <summary>The big brass button. Grab it to press.</summary>
+    /// <summary>The big brass button. Left-click it to press.</summary>
     public class FortuneMachineButton : MonoBehaviour, IInteractable
     {
         [SerializeField] FortuneMachine machine;
@@ -13,8 +12,9 @@ namespace MissDirection.Fortunes
 
         public bool Interact(GameObject interactor)
         {
-            if (machine == null || interactor == null) return false;
-            return machine.TryPress(interactor.GetComponentInParent<PlayerFortunes>());
+            if (machine == null) return false;
+            machine.RequestPress();
+            return true;
         }
     }
 }

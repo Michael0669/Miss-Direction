@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using MissDirection.Interaction;
+using MissDirection.Networking;
 using UnityEngine;
 
 namespace MissDirection.Player
@@ -8,6 +9,7 @@ namespace MissDirection.Player
     /// Two hands. Hold left or right mouse to grab what you're looking at:
     /// objects are carried in front of you, teammates are held by the hand (a spring joint).
     /// Interactables (the machine button, cards, levers) respond to the LEFT hand only.
+    /// Networked crates are handed over by the host first, then carried locally.
     /// </summary>
     [RequireComponent(typeof(PlayerController))]
     public class PlayerGrab : MonoBehaviour
@@ -41,6 +43,12 @@ namespace MissDirection.Player
             public SpringJoint joint;
             public Vector3 localGrabPoint;
             public Quaternion rotationOffset; // held object's rotation relative to the player's yaw
+
+            // Waiting for the host to hand over a networked object
+            public NetworkGrabbable pending;
+            public Rigidbody pendingBody;
+            public Vector3 pendingLocalPoint;
+            public float pendingUntil;
 
             // Restored on release
             public bool hadGravity;
@@ -79,6 +87,8 @@ namespace MissDirection.Player
 
         void FixedUpdate()
         {
+            FinishPending(left);
+            FinishPending(right);
             CarryHeld(left);
             CarryHeld(right);
         }
@@ -86,7 +96,11 @@ namespace MissDirection.Player
         void HandleHand(Hand hand, bool down)
         {
             if (down && !hand.wasDown) TryGrab(hand);
-            if (!down && hand.wasDown) Release(hand, true);
+            if (!down && hand.wasDown)
+            {
+                hand.pending = null;
+                Release(hand, true);
+            }
             hand.wasDown = down;
         }
 
@@ -104,9 +118,10 @@ namespace MissDirection.Player
             }
 
             var target = hit.rigidbody;
-            if (target == null || target == selfBody || target.isKinematic) return;
+            if (target == null || target == selfBody) return;
             if (left.body == target || right.body == target) return; // already in the other hand
 
+            // Teammates (their bodies are driven by their own computer, so they look kinematic here)
             if (target.GetComponent<PlayerController>() != null)
             {
                 HoldHands(hand, target);
@@ -114,13 +129,43 @@ namespace MissDirection.Player
             }
 
             if (target.mass > maxCarryMass) return;
-            PickUp(hand, target, hit.point);
+            var localPoint = target.transform.InverseTransformPoint(hit.point);
+
+            // Networked object someone else controls: ask the host for it, pick it up once it's ours.
+            var grabbable = target.GetComponent<NetworkGrabbable>();
+            if (grabbable != null && grabbable.IsSpawned && !grabbable.CanMoveLocally)
+            {
+                grabbable.RequestOwnership();
+                hand.pending = grabbable;
+                hand.pendingBody = target;
+                hand.pendingLocalPoint = localPoint;
+                hand.pendingUntil = Time.time + 1f;
+                return;
+            }
+
+            if (target.isKinematic) return;
+            PickUp(hand, target, localPoint);
         }
 
-        void PickUp(Hand hand, Rigidbody target, Vector3 grabPoint)
+        void FinishPending(Hand hand)
+        {
+            if (hand.pending == null) return;
+            if (Time.time > hand.pendingUntil || hand.pendingBody == null || hand.body != null)
+            {
+                hand.pending = null;
+                return;
+            }
+            if (!hand.pending.CanMoveLocally) return;
+
+            var body = hand.pendingBody;
+            hand.pending = null;
+            if (left.body != body && right.body != body) PickUp(hand, body, hand.pendingLocalPoint);
+        }
+
+        void PickUp(Hand hand, Rigidbody target, Vector3 localGrabPoint)
         {
             hand.body = target;
-            hand.localGrabPoint = target.transform.InverseTransformPoint(grabPoint);
+            hand.localGrabPoint = localGrabPoint;
             hand.rotationOffset = Quaternion.Inverse(Quaternion.Euler(0f, controller.Yaw, 0f)) * target.rotation;
 
             // Smooth rendering and steady motion while carried
@@ -168,6 +213,11 @@ namespace MissDirection.Player
             var target = eye + look * new Vector3(0.35f * hand.side, 0f, holdDistance);
 
             var body = hand.body;
+            if (body.isKinematic)
+            {
+                Release(hand, false); // someone else took it
+                return;
+            }
             var grabPoint = body.position + body.rotation * Vector3.Scale(hand.localGrabPoint, body.transform.lossyScale);
             var error = target - grabPoint;
 
@@ -203,10 +253,13 @@ namespace MissDirection.Player
                 body.useGravity = hand.hadGravity;
                 body.interpolation = hand.interpolation;
                 body.collisionDetectionMode = hand.collisionMode;
-                body.angularVelocity = Vector3.zero;
-                body.linearVelocity = keepMomentum
-                    ? Vector3.ClampMagnitude(body.linearVelocity, throwSpeedCap)
-                    : Vector3.zero;
+                if (!body.isKinematic)
+                {
+                    body.angularVelocity = Vector3.zero;
+                    body.linearVelocity = keepMomentum
+                        ? Vector3.ClampMagnitude(body.linearVelocity, throwSpeedCap)
+                        : Vector3.zero;
+                }
 
                 foreach (var other in hand.ignoredColliders)
                 {
@@ -221,13 +274,13 @@ namespace MissDirection.Player
             hand.body = null;
         }
 
+        /// <summary>Drop everything (the Fortune Machine's out-of-turn shock).</summary>
         public void ReleaseAll()
         {
+            left.pending = null;
+            right.pending = null;
             Release(left, false);
             Release(right, false);
         }
-
-        /// <summary>Sent by the Fortune Machine when you press out of turn.</summary>
-        void OnFortuneShock() => ReleaseAll();
     }
 }

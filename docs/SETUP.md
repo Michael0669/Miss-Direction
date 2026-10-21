@@ -35,4 +35,23 @@ If changes arrive on a separate branch, pick it from the **Current branch** drop
 
 ## 5. Try it
 
-In Unity: **Miss Direction → Build Test Playground Scene**, then press **Play**.
+In Unity: **Miss Direction → Build Test Playground Scene**, press **Play**, then click **HOST A GAME**.
+
+## 6. Test multiplayer on one computer
+
+Netcode for GameObjects installs automatically from `Packages/manifest.json`. For testing you also need **Multiplayer Play Mode**, which opens extra "virtual player" windows on the same computer:
+
+1. **Window → Package Manager → Unity Registry**, search **Multiplayer Play Mode**, click **Install**.
+2. **Window → Multiplayer → Multiplayer Play Mode**. Tick **Player 2** (and 3 or 4 if you like). The first launch of each takes a minute.
+3. Press **Play**. In the main editor click **HOST A GAME**. In each virtual player window click **JOIN** (address `127.0.0.1`, port `7777`).
+
+Each window is its own player with its own color and name tag. Click inside a window to control that player.
+
+## 7. Test with a friend on the same Wi-Fi
+
+1. **File → Build Profiles**, make sure `Playground` is in the scene list, and click **Build** (or **Build And Run**).
+2. Copy the build folder to the other computer.
+3. One player clicks **HOST A GAME**. Their local IP is shown in the bottom-right corner.
+4. The other types that IP into **Address** and clicks **JOIN**.
+
+Allow the game through Windows Firewall if asked. Playing over the internet needs Steam (coming next), so don't try port forwarding for now.

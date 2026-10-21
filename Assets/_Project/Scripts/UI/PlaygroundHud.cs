@@ -1,6 +1,8 @@
 using MissDirection.Fortunes;
 using MissDirection.Interaction;
+using MissDirection.Networking;
 using MissDirection.Player;
+using Unity.Netcode;
 using UnityEngine;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
@@ -11,7 +13,8 @@ namespace MissDirection.UI
     /// <summary>
     /// Prototype HUD (IMGUI, no setup needed): what to do next, a crosshair with a
     /// "what am I looking at" prompt, the Fortunes you hold, and controls.
-    /// R resets the machine so you can draw again; H hides the controls.
+    /// R resets the floor for everyone so you can draw again; H hides the controls.
+    /// Only runs on your own player.
     /// </summary>
     public class PlaygroundHud : MonoBehaviour
     {
@@ -43,11 +46,7 @@ namespace MissDirection.UI
 
         void Update()
         {
-            if (ResetPressed() && machine != null && player != null)
-            {
-                player.ClearAll();
-                machine.BeginFloor(machine.TeamSize, Random.Range(int.MinValue, int.MaxValue));
-            }
+            if (ResetPressed() && machine != null) machine.RequestReset();
             if (HelpPressed()) showControls = !showControls;
 
             UpdatePrompt();
@@ -65,8 +64,10 @@ namespace MissDirection.UI
             var card = hit.collider.GetComponentInParent<FortuneCard>();
             if (card != null)
             {
-                bool mine = card.ReservedFor == null || card.ReservedFor == player;
-                prompt = mine ? $"LEFT CLICK  Take your card: {card.Fortune.displayName}" : "This card belongs to someone else";
+                bool mine = card.IsMine;
+                prompt = mine
+                    ? $"LEFT CLICK  Take your card: {card.Fortune.displayName}"
+                    : $"This card belongs to {PlayerName(card.OwnerClientId)}";
                 promptActionable = mine;
                 return;
             }
@@ -76,7 +77,7 @@ namespace MissDirection.UI
             {
                 var m = button.Machine;
                 if (m.IsBusy) prompt = "Wait your turn! Madame Direction is reading...";
-                else if (m.HasPressed(player)) prompt = m.HasClaimed(player) ? "You already have your Fortune (R to reset)" : "Take your card first!";
+                else if (m.HasPressed(LocalId)) prompt = m.HasClaimed(LocalId) ? "You already have your Fortune (R to reset)" : "Take your card first!";
                 else { prompt = "LEFT CLICK  Press the button"; promptActionable = true; }
                 return;
             }
@@ -89,32 +90,53 @@ namespace MissDirection.UI
             }
 
             var rb = hit.rigidbody;
-            if (rb != null && !rb.isKinematic && (player == null || rb.gameObject != player.gameObject))
+            if (rb == null || (player != null && rb.gameObject == player.gameObject)) return;
+
+            if (rb.GetComponent<PlayerController>() != null)
             {
-                prompt = rb.GetComponent<PlayerController>() != null
-                    ? "HOLD CLICK  Hold hands"
-                    : "HOLD LEFT or RIGHT CLICK  Carry";
+                prompt = "HOLD LEFT or RIGHT CLICK  Hold hands";
+                promptActionable = true;
+            }
+            else if (!rb.isKinematic || rb.GetComponent<NetworkGrabbable>() != null)
+            {
+                prompt = "HOLD LEFT or RIGHT CLICK  Carry";
                 promptActionable = true;
             }
         }
+
+        static ulong LocalId => NetworkManager.Singleton != null ? NetworkManager.Singleton.LocalClientId : 0;
+
+        static string PlayerName(ulong clientId) =>
+            PlayerNetwork.TryGet(clientId, out var p) ? p.DisplayName : $"Player {clientId + 1}";
 
         string Objective()
         {
             if (machine == null) return "No Fortune Machine in this scene.";
             if (!machine.HasDeck) return "The Fortune Machine has no deck! Re-run Miss Direction > Build Test Playground Scene.";
+            ulong me = LocalId;
+            bool pressed = machine.HasPressed(me);
+            bool claimed = machine.HasClaimed(me);
+            string progress = $"{machine.ClaimedCount}/{machine.TeamSize} have their Fortune";
+
             switch (machine.State)
             {
                 case FortuneMachine.MachineState.Reading:
-                    return "Madame Direction is reading your fortune...";
+                    return pressed && !claimed
+                        ? "Madame Direction is reading your fortune..."
+                        : "Madame Direction is reading someone's fortune. Wait your turn!";
                 case FortuneMachine.MachineState.Revealed:
                     return machine.LastRevealGood ? "Her eyes glow GOLD... a good fortune!" : "Her eyes glow RED... uh oh.";
-                case FortuneMachine.MachineState.CardWaiting:
-                    return "Your card printed! Look at the floating card and LEFT CLICK it.";
-                case FortuneMachine.MachineState.Done:
-                    return "Fortune received! Try moving around with it.   Press R to draw again.";
-                default:
-                    return "Walk to the Fortune Machine (the striped cabinet) and LEFT CLICK the glowing green button.";
             }
+
+            if (pressed && !claimed) return "Your card printed! Look at the floating card and LEFT CLICK it.";
+            if (machine.State == FortuneMachine.MachineState.Done)
+                return "Everyone has their Fortune! Try moving around with it.   R to draw again.";
+            if (claimed) return $"Fortune received! Waiting for the others ({progress}).";
+            if (machine.State == FortuneMachine.MachineState.CardWaiting)
+                return "Someone's card is waiting to be taken. Your turn next!";
+            return machine.TeamSize > 1
+                ? $"Walk to the Fortune Machine and LEFT CLICK the green button. One at a time! ({progress})"
+                : "Walk to the Fortune Machine (the striped cabinet) and LEFT CLICK the glowing green button.";
         }
 
         void OnGUI()
@@ -124,7 +146,8 @@ namespace MissDirection.UI
 
             // Objective banner
             var objective = Objective();
-            var banner = new Rect(w * 0.5f - 420f, 16f, 840f, 52f);
+            float bannerWidth = Mathf.Min(840f, w - 32f);
+            var banner = new Rect((w - bannerWidth) * 0.5f, 16f, bannerWidth, 52f);
             DrawPanel(banner, new Color(0.1f, 0.05f, 0.15f, 0.8f));
             big.normal.textColor = machine != null && machine.State == FortuneMachine.MachineState.Revealed
                 ? (machine.LastRevealGood ? Gold : Red)
@@ -165,11 +188,11 @@ namespace MissDirection.UI
             // Controls
             if (showControls)
             {
-                var rect = new Rect(16f, h - 190f, 300f, 174f);
+                var rect = new Rect(16f, h - 226f, 300f, 210f);
                 DrawPanel(rect, new Color(0f, 0f, 0f, 0.55f));
                 small.normal.textColor = Color.white;
                 GUI.Label(new Rect(rect.x + 12f, rect.y + 8f, rect.width - 24f, rect.height - 16f),
-                    "WASD  Move\nMouse  Look\nSpace  Jump\nShift  Sprint\nLeft / Right click  Grab or press\nR  Reset the machine (draw again)\nH  Hide this help\nEsc  Free the mouse", small);
+                    "WASD  Move\nMouse  Look\nSpace  Jump\nShift  Sprint\nLeft click  Press / take card\nLeft or Right click  Carry, hold hands\nR  Reset the floor for everyone\nH  Hide this help\nF8  Leave the game\nEsc  Free the mouse", small);
             }
         }
 

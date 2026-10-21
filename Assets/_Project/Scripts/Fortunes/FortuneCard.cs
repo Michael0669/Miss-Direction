@@ -1,13 +1,14 @@
 using MissDirection.Interaction;
-using MissDirection.Player;
+using Unity.Netcode;
 using UnityEngine;
 
 namespace MissDirection.Fortunes
 {
     /// <summary>
     /// The printed card. Pops out of the slot, hovers and bobs so it's easy to spot,
-    /// and shows the Fortune's name. Reserved for the player who pressed the button;
-    /// grabbing it activates the Fortune. (Wrist slot and "show card" come later.)
+    /// and shows the Fortune's name. Every player sees it, but only the player who pressed
+    /// the button can take it. Taking it asks the host, who grants the Fortune to everyone's
+    /// copy of that player. (Wrist slot and "show card" come later.)
     /// </summary>
     [RequireComponent(typeof(Rigidbody))]
     public class FortuneCard : MonoBehaviour, IInteractable
@@ -24,19 +25,25 @@ namespace MissDirection.Fortunes
         Vector3 startPosition;
         Vector3 hoverPosition;
         float spawnTime;
+        bool requested;
 
         public FortuneDefinition Fortune { get; private set; }
-        public PlayerFortunes ReservedFor { get; private set; }
-        public bool Claimed { get; private set; }
+        public ulong OwnerClientId { get; private set; }
+        public int CardId { get; private set; }
+
+        /// <summary>True if this card belongs to the player on this computer.</summary>
+        public bool IsMine =>
+            NetworkManager.Singleton != null && NetworkManager.Singleton.LocalClientId == OwnerClientId;
 
         void Awake() => body = GetComponent<Rigidbody>();
 
-        public void Init(FortuneDefinition fortune, FortuneMachine source, PlayerFortunes reservedFor)
+        public void Init(FortuneDefinition fortune, FortuneMachine source, ulong ownerClientId, int cardId)
         {
             Fortune = fortune;
             machine = source;
-            ReservedFor = reservedFor;
-            name = $"Card - {fortune.displayName}";
+            OwnerClientId = ownerClientId;
+            CardId = cardId;
+            name = $"Card - {fortune.displayName} (Player {ownerClientId + 1})";
 
             startPosition = transform.position;
             hoverPosition = startPosition + transform.forward * popDistance;
@@ -65,18 +72,11 @@ namespace MissDirection.Fortunes
             transform.position = position;
         }
 
-        public bool Interact(GameObject interactor) =>
-            Claim(interactor != null ? interactor.GetComponentInParent<PlayerFortunes>() : null);
-
-        public bool Claim(PlayerFortunes player)
+        public bool Interact(GameObject interactor)
         {
-            if (Claimed || player == null || Fortune == null) return false;
-            if (ReservedFor != null && ReservedFor != player) return false;
-
-            Claimed = true;
-            player.Grant(Fortune);
-            if (machine != null) machine.NotifyClaimed(player);
-            Destroy(gameObject);
+            if (requested || !IsMine || machine == null) return false;
+            requested = true; // the host confirms, then every game removes the card
+            machine.RequestClaim(CardId);
             return true;
         }
     }

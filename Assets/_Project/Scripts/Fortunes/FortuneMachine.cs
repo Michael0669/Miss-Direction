@@ -1,29 +1,31 @@
 using System.Collections;
 using System.Collections.Generic;
-using MissDirection.Player;
+using MissDirection.Networking;
+using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.Events;
 
 namespace MissDirection.Fortunes
 {
     /// <summary>
-    /// Madame Direction's cabinet. One press at a time: flash red or gold, read the fortune,
-    /// print a card reserved for whoever pressed. Pressing while she's busy gets you shocked.
+    /// Madame Direction's cabinet, run by the host. One press at a time: flash red or gold,
+    /// read the fortune, print a card for whoever pressed. Pressing while she's busy shocks you.
+    /// Every player sees the same reading and the same card; only the presser can take it.
     /// The floor's elevator should wait for <see cref="AllCardsClaimed"/>.
     /// </summary>
-    public class FortuneMachine : MonoBehaviour
+    public class FortuneMachine : NetworkBehaviour
     {
+        public enum MachineState { Ready, Reading, Revealed, CardWaiting, Done }
+
         [SerializeField] FortuneDeck deck;
         [SerializeField] FortuneCard cardPrefab;
         [SerializeField] Transform cardSlot;
-        [SerializeField] int teamSize = 4;
 
         [Header("Timing (target: about 3 seconds per player)")]
         [SerializeField, Min(0f)] float revealSeconds = 0.4f;
         [SerializeField, Min(0f)] float readingSeconds = 2.2f;
-        [SerializeField] float cardEjectSpeed = 1.5f;
 
-        [Header("Hooks for lights, sounds and animation")]
+        [Header("Hooks for lights, sounds and animation (run on every player's game)")]
         public UnityEvent onReadingStarted;
         public UnityEvent onBadReveal;
         public UnityEvent onGoodReveal;
@@ -31,125 +33,284 @@ namespace MissDirection.Fortunes
         public UnityEvent onOutOfTurnShock;
         public UnityEvent onAllCardsClaimed;
 
+        // Synced to everyone (written by the host)
+        NetworkVariable<bool> busy = new();
+        NetworkVariable<bool> revealed = new();
+        NetworkVariable<bool> lastGood = new();
+        NetworkVariable<int> teamSize = new(1);
+        NetworkList<ulong> pressedIds;
+        NetworkList<ulong> claimedIds;
+
+        // Host only
         readonly Dictionary<FortuneDefinition, int> dealt = new();
-        readonly HashSet<PlayerFortunes> pressed = new();
-        readonly HashSet<PlayerFortunes> claimed = new();
+        readonly Dictionary<int, (ulong owner, int fortuneIndex)> openCards = new();
         System.Random rng = new();
+        int nextCardId = 1;
 
-        public enum MachineState { Ready, Reading, Revealed, CardWaiting, Done }
+        // Every player's game
+        readonly Dictionary<int, FortuneCard> localCards = new();
 
-        public bool IsBusy { get; private set; }
+        public bool IsBusy => busy.Value;
+        public bool HasRevealed => busy.Value && revealed.Value;
+        public bool LastRevealGood => lastGood.Value;
         public bool HasDeck => deck != null && deck.fortunes.Count > 0;
-        public int TeamSize => teamSize;
-        public bool AllCardsClaimed => claimed.Count >= teamSize;
-
-        /// <summary>True between the red/gold flash and the card printing.</summary>
-        public bool HasRevealed { get; private set; }
-        /// <summary>Whether the most recent reading was a good Fortune (gold).</summary>
-        public bool LastRevealGood { get; private set; }
+        public int TeamSize => Mathf.Max(1, teamSize.Value);
+        public int ClaimedCount => claimedIds?.Count ?? 0;
+        public bool AllCardsClaimed => ClaimedCount >= TeamSize;
 
         public MachineState State
         {
             get
             {
-                if (IsBusy) return HasRevealed ? MachineState.Revealed : MachineState.Reading;
-                if (pressed.Count > claimed.Count) return MachineState.CardWaiting;
+                if (busy.Value) return revealed.Value ? MachineState.Revealed : MachineState.Reading;
+                if (pressedIds != null && pressedIds.Count > claimedIds.Count) return MachineState.CardWaiting;
                 if (AllCardsClaimed) return MachineState.Done;
                 return MachineState.Ready;
             }
         }
 
-        public bool HasPressed(PlayerFortunes player) => player != null && pressed.Contains(player);
-        public bool HasClaimed(PlayerFortunes player) => player != null && claimed.Contains(player);
+        public bool HasPressed(ulong clientId) => pressedIds != null && pressedIds.Contains(clientId);
+        public bool HasClaimed(ulong clientId) => claimedIds != null && claimedIds.Contains(clientId);
 
-        /// <summary>Reset for a new floor. Use a shared seed so every client deals the same cards.</summary>
-        public void BeginFloor(int playerCount, int seed)
+        void Awake()
         {
-            StopAllCoroutines();
-            teamSize = Mathf.Max(1, playerCount);
-            rng = new System.Random(seed);
-            dealt.Clear();
-            pressed.Clear();
-            claimed.Clear();
-            IsBusy = false;
-            HasRevealed = false;
-
-            foreach (var leftover in FindObjectsByType<FortuneCard>(FindObjectsSortMode.None))
-                Destroy(leftover.gameObject);
+            pressedIds = new NetworkList<ulong>();
+            claimedIds = new NetworkList<ulong>();
         }
 
-        public bool TryPress(PlayerFortunes presser)
+        public override void OnNetworkSpawn()
         {
-            if (presser == null) return false;
-            if (deck == null)
+            if (!IsServer) return;
+            NetworkManager.OnClientConnectedCallback += OnClientConnected;
+            NetworkManager.OnClientDisconnectCallback += OnClientDisconnected;
+            BeginFloor(Random.Range(int.MinValue, int.MaxValue));
+        }
+
+        public override void OnNetworkDespawn()
+        {
+            if (NetworkManager != null)
+            {
+                NetworkManager.OnClientConnectedCallback -= OnClientConnected;
+                NetworkManager.OnClientDisconnectCallback -= OnClientDisconnected;
+            }
+            foreach (var card in localCards.Values)
+                if (card != null) Destroy(card.gameObject);
+            localCards.Clear();
+        }
+
+        // ---------- called by players on their own game ----------
+
+        /// <summary>The local player pressed the button.</summary>
+        public void RequestPress()
+        {
+            if (!IsSpawned) return;
+            if (!HasDeck)
             {
                 Debug.LogError("Fortune Machine has no deck assigned. Run Miss Direction > Build Test Playground Scene again, " +
                                "or drag StarterDeck onto the FortuneMachine's Deck field.", this);
-                return false;
+                return;
             }
-
-            if (IsBusy)
-            {
-                onOutOfTurnShock?.Invoke();
-                presser.SendMessage("OnFortuneShock", SendMessageOptions.DontRequireReceiver);
-                return false;
-            }
-
-            if (pressed.Contains(presser)) return false; // one card per player per floor
-
-            StartCoroutine(ReadFortune(presser));
-            return true;
+            PressRpc();
         }
 
-        IEnumerator ReadFortune(PlayerFortunes presser)
+        /// <summary>The local player grabbed their card.</summary>
+        public void RequestClaim(int cardId)
         {
-            IsBusy = true;
-            HasRevealed = false;
-            pressed.Add(presser);
+            if (IsSpawned) ClaimRpc(cardId);
+        }
 
-            var fortune = deck.Draw(rng, teamSize, dealt);
-            onReadingStarted?.Invoke();
+        /// <summary>Start the floor over: everyone's Fortunes are cleared and the machine is ready again.</summary>
+        public void RequestReset()
+        {
+            if (IsSpawned) ResetRpc();
+        }
+
+        // ---------- host ----------
+
+        /// <summary>Reset for a new floor. Host only.</summary>
+        public void BeginFloor(int seed)
+        {
+            if (!IsServer) return;
+            StopAllCoroutines();
+            rng = new System.Random(seed);
+            dealt.Clear();
+            openCards.Clear();
+            pressedIds.Clear();
+            claimedIds.Clear();
+            busy.Value = false;
+            revealed.Value = false;
+            teamSize.Value = Mathf.Max(1, NetworkManager.ConnectedClientsIds.Count);
+        }
+
+        [Rpc(SendTo.Server)]
+        void PressRpc(RpcParams rpcParams = default)
+        {
+            ulong presser = rpcParams.Receive.SenderClientId;
+
+            if (busy.Value)
+            {
+                ShockRpc(presser);
+                return;
+            }
+            if (pressedIds.Contains(presser)) return; // one card per player per floor
+
+            StartCoroutine(ReadFortune(presser));
+        }
+
+        IEnumerator ReadFortune(ulong presser)
+        {
+            busy.Value = true;
+            revealed.Value = false;
+            pressedIds.Add(presser);
+
+            var fortune = deck.Draw(rng, TeamSize, dealt);
+            int fortuneIndex = fortune != null ? deck.fortunes.IndexOf(fortune) : -1;
+            ReadingStartedRpc();
 
             yield return new WaitForSeconds(revealSeconds);
-            LastRevealGood = fortune != null && fortune.kind == FortuneKind.Good;
-            HasRevealed = true;
-            if (LastRevealGood) onGoodReveal?.Invoke();
-            else onBadReveal?.Invoke();
+            lastGood.Value = fortune != null && fortune.kind == FortuneKind.Good;
+            revealed.Value = true;
+            RevealRpc(lastGood.Value);
 
             yield return new WaitForSeconds(readingSeconds);
-            if (fortune != null)
+
+            bool stillHere = IsConnected(presser);
+            if (fortuneIndex >= 0 && stillHere)
             {
                 dealt.TryGetValue(fortune, out int count);
                 dealt[fortune] = count + 1;
-                PrintCard(fortune, presser);
+
+                int cardId = nextCardId++;
+                openCards[cardId] = (presser, fortuneIndex);
+                PrintCardRpc(cardId, fortuneIndex, presser);
+            }
+            else
+            {
+                pressedIds.Remove(presser);
             }
 
-            IsBusy = false;
+            revealed.Value = false;
+            busy.Value = false;
         }
 
-        void PrintCard(FortuneDefinition fortune, PlayerFortunes owner)
+        [Rpc(SendTo.Server)]
+        void ClaimRpc(int cardId, RpcParams rpcParams = default)
         {
-            if (cardPrefab == null)
+            ulong sender = rpcParams.Receive.SenderClientId;
+            if (!openCards.TryGetValue(cardId, out var card) || card.owner != sender) return;
+
+            openCards.Remove(cardId);
+            if (!claimedIds.Contains(sender)) claimedIds.Add(sender);
+            CardClaimedRpc(cardId, sender, card.fortuneIndex);
+
+            if (AllCardsClaimed) AllCardsClaimedRpc();
+        }
+
+        [Rpc(SendTo.Server)]
+        void ResetRpc()
+        {
+            BeginFloor(Random.Range(int.MinValue, int.MaxValue));
+            FloorResetRpc();
+        }
+
+        void OnClientConnected(ulong clientId) =>
+            teamSize.Value = Mathf.Max(1, NetworkManager.ConnectedClientsIds.Count);
+
+        void OnClientDisconnected(ulong clientId)
+        {
+            if (!IsServer) return;
+
+            var leftover = new List<int>();
+            foreach (var pair in openCards)
+                if (pair.Value.owner == clientId) leftover.Add(pair.Key);
+            foreach (int cardId in leftover)
             {
-                // No card prefab assigned: grant straight away so the loop still works.
-                owner.Grant(fortune);
-                NotifyClaimed(owner);
-                return;
+                openCards.Remove(cardId);
+                RemoveCardRpc(cardId);
             }
+
+            pressedIds.Remove(clientId);
+            claimedIds.Remove(clientId);
+
+            int remaining = 0;
+            foreach (var id in NetworkManager.ConnectedClientsIds)
+                if (id != clientId) remaining++;
+            teamSize.Value = Mathf.Max(1, remaining);
+        }
+
+        bool IsConnected(ulong clientId)
+        {
+            foreach (var id in NetworkManager.ConnectedClientsIds)
+                if (id == clientId) return true;
+            return false;
+        }
+
+        // ---------- every player's game ----------
+
+        [Rpc(SendTo.ClientsAndHost)]
+        void ShockRpc(ulong clientId)
+        {
+            onOutOfTurnShock?.Invoke();
+            if (NetworkManager.LocalClientId == clientId && PlayerNetwork.Local != null && PlayerNetwork.Local.Grab != null)
+                PlayerNetwork.Local.Grab.ReleaseAll();
+        }
+
+        [Rpc(SendTo.ClientsAndHost)]
+        void ReadingStartedRpc() => onReadingStarted?.Invoke();
+
+        [Rpc(SendTo.ClientsAndHost)]
+        void RevealRpc(bool good)
+        {
+            if (good) onGoodReveal?.Invoke();
+            else onBadReveal?.Invoke();
+        }
+
+        [Rpc(SendTo.ClientsAndHost)]
+        void PrintCardRpc(int cardId, int fortuneIndex, ulong owner)
+        {
+            var fortune = GetFortune(fortuneIndex);
+            if (fortune == null || cardPrefab == null) return;
 
             var slot = cardSlot != null ? cardSlot : transform;
             var card = Instantiate(cardPrefab, slot.position, slot.rotation);
-            card.Init(fortune, this, owner);
-            if (card.TryGetComponent(out Rigidbody body) && !body.isKinematic)
-                body.linearVelocity = slot.forward * cardEjectSpeed;
-
+            card.Init(fortune, this, owner, cardId);
+            localCards[cardId] = card;
             onCardPrinted?.Invoke();
         }
 
-        internal void NotifyClaimed(PlayerFortunes player)
+        [Rpc(SendTo.ClientsAndHost)]
+        void CardClaimedRpc(int cardId, ulong owner, int fortuneIndex)
         {
-            claimed.Add(player);
-            if (AllCardsClaimed) onAllCardsClaimed?.Invoke();
+            DestroyLocalCard(cardId);
+            var fortune = GetFortune(fortuneIndex);
+            if (fortune != null && PlayerNetwork.TryGet(owner, out var player) && player.Fortunes != null)
+                player.Fortunes.Grant(fortune);
         }
+
+        [Rpc(SendTo.ClientsAndHost)]
+        void RemoveCardRpc(int cardId) => DestroyLocalCard(cardId);
+
+        [Rpc(SendTo.ClientsAndHost)]
+        void AllCardsClaimedRpc() => onAllCardsClaimed?.Invoke();
+
+        [Rpc(SendTo.ClientsAndHost)]
+        void FloorResetRpc()
+        {
+            foreach (var card in localCards.Values)
+                if (card != null) Destroy(card.gameObject);
+            localCards.Clear();
+
+            foreach (var player in PlayerNetwork.All.Values)
+                if (player != null && player.Fortunes != null) player.Fortunes.ClearAll();
+        }
+
+        void DestroyLocalCard(int cardId)
+        {
+            if (localCards.TryGetValue(cardId, out var card) && card != null) Destroy(card.gameObject);
+            localCards.Remove(cardId);
+        }
+
+        FortuneDefinition GetFortune(int index) =>
+            deck != null && index >= 0 && index < deck.fortunes.Count ? deck.fortunes[index] : null;
     }
 }
