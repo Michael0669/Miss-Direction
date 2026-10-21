@@ -36,9 +36,30 @@ namespace MissDirection.Fortunes
         readonly HashSet<PlayerFortunes> claimed = new();
         System.Random rng = new();
 
+        public enum MachineState { Ready, Reading, Revealed, CardWaiting, Done }
+
         public bool IsBusy { get; private set; }
         public int TeamSize => teamSize;
         public bool AllCardsClaimed => claimed.Count >= teamSize;
+
+        /// <summary>True between the red/gold flash and the card printing.</summary>
+        public bool HasRevealed { get; private set; }
+        /// <summary>Whether the most recent reading was a good Fortune (gold).</summary>
+        public bool LastRevealGood { get; private set; }
+
+        public MachineState State
+        {
+            get
+            {
+                if (IsBusy) return HasRevealed ? MachineState.Revealed : MachineState.Reading;
+                if (pressed.Count > claimed.Count) return MachineState.CardWaiting;
+                if (AllCardsClaimed) return MachineState.Done;
+                return MachineState.Ready;
+            }
+        }
+
+        public bool HasPressed(PlayerFortunes player) => player != null && pressed.Contains(player);
+        public bool HasClaimed(PlayerFortunes player) => player != null && claimed.Contains(player);
 
         /// <summary>Reset for a new floor. Use a shared seed so every client deals the same cards.</summary>
         public void BeginFloor(int playerCount, int seed)
@@ -50,6 +71,10 @@ namespace MissDirection.Fortunes
             pressed.Clear();
             claimed.Clear();
             IsBusy = false;
+            HasRevealed = false;
+
+            foreach (var leftover in FindObjectsByType<FortuneCard>(FindObjectsSortMode.None))
+                Destroy(leftover.gameObject);
         }
 
         public bool TryPress(PlayerFortunes presser)
@@ -72,13 +97,16 @@ namespace MissDirection.Fortunes
         IEnumerator ReadFortune(PlayerFortunes presser)
         {
             IsBusy = true;
+            HasRevealed = false;
             pressed.Add(presser);
 
             var fortune = deck.Draw(rng, teamSize, dealt);
             onReadingStarted?.Invoke();
 
             yield return new WaitForSeconds(revealSeconds);
-            if (fortune != null && fortune.kind == FortuneKind.Good) onGoodReveal?.Invoke();
+            LastRevealGood = fortune != null && fortune.kind == FortuneKind.Good;
+            HasRevealed = true;
+            if (LastRevealGood) onGoodReveal?.Invoke();
             else onBadReveal?.Invoke();
 
             yield return new WaitForSeconds(readingSeconds);
@@ -105,7 +133,7 @@ namespace MissDirection.Fortunes
             var slot = cardSlot != null ? cardSlot : transform;
             var card = Instantiate(cardPrefab, slot.position, slot.rotation);
             card.Init(fortune, this, owner);
-            if (card.TryGetComponent(out Rigidbody body))
+            if (card.TryGetComponent(out Rigidbody body) && !body.isKinematic)
                 body.linearVelocity = slot.forward * cardEjectSpeed;
 
             onCardPrinted?.Invoke();

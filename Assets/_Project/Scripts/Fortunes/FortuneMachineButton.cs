@@ -9,6 +9,8 @@ namespace MissDirection.Fortunes
     {
         [SerializeField] FortuneMachine machine;
 
+        public FortuneMachine Machine => machine;
+
         public bool Interact(GameObject interactor)
         {
             if (machine == null || interactor == null) return false;
