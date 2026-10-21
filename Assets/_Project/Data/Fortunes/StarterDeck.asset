@@ -1,0 +1,29 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d6acebbf45ab35d45807f75888321e9f, type: 3}
+  m_Name: StarterDeck
+  m_EditorClassIdentifier: Assembly-CSharp::MissDirection.Fortunes.FortuneDeck
+  fortunes:
+  - {fileID: 11400000, guid: 95c7a635c466dac4d81337d9af75a064, type: 2}
+  - {fileID: 11400000, guid: 9f8c7681398cff74c87f5c22f4fc7d3b, type: 2}
+  - {fileID: 11400000, guid: b1215fdf740bf934d9eb5baf13bd575a, type: 2}
+  - {fileID: 11400000, guid: 221dd275849d0d942950a6d7ff87680d, type: 2}
+  - {fileID: 11400000, guid: 551b70889277cb7488d48b6fa35bea83, type: 2}
+  - {fileID: 11400000, guid: 034d0c02276ee3743bf6be5f4906638a, type: 2}
+  - {fileID: 11400000, guid: 29080c3cf614f0645bf7fff77cc55f3a, type: 2}
+  - {fileID: 11400000, guid: 9d379f677a1f9044faea0c00445b2b58, type: 2}
+  - {fileID: 11400000, guid: 777da05aaafce404e83d4d2fd13933e9, type: 2}
+  - {fileID: 11400000, guid: b0590b287e0e53e47af688d3fee8b52f, type: 2}
+  - {fileID: 11400000, guid: cdd9d31ea3d45ce469ccf80110b547b7, type: 2}
+  - {fileID: 11400000, guid: b4c4df02bcab207499279015901bf173, type: 2}
+  badChance: 0.8
+  goodChance: 0.15

@@ -1,0 +1,40 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 86b40817124c817448b742c9bcde72a7, type: 3}
+  m_Name: Fortune_Hiccups
+  m_EditorClassIdentifier: Assembly-CSharp::MissDirection.Fortunes.FortuneDefinition
+  id: hiccups
+  displayName: Hiccups
+  cardRule: '*hic* You jump when you least expect it.'
+  cardArt: {fileID: 0}
+  printChime: {fileID: 0}
+  kind: 0
+  category: 0
+  rarity: 0
+  weight: 1
+  capPerFivePlayers: 0
+  effects:
+  - {fileID: 5680648471865094252}
+--- !u!114 &5680648471865094252
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5c43c5f44dd51e34bbdcf8960687c1f3, type: 3}
+  m_Name: HiccupJumps 1
+  m_EditorClassIdentifier: Assembly-CSharp::MissDirection.Fortunes.ModifierEffect
+  type: 11
+  value: 1
