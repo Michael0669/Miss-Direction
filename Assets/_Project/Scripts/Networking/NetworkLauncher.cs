@@ -117,7 +117,8 @@ namespace MissDirection.Networking
             var spawn = FindAnyObjectByType<PlayerSpawnArea>();
             if (spawn != null)
             {
-                response.Position = spawn.GetPosition(playerCount);
+                // Stand where this player's number says (Player 1 in the middle, the rest around)
+                response.Position = spawn.GetPosition(PlayerNetwork.LowestFreeNumber() - 1);
                 response.Rotation = spawn.Rotation;
             }
         }

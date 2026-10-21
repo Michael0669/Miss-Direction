@@ -10,6 +10,8 @@ namespace MissDirection.Networking
     /// The networked side of a player. The owner keeps their camera, input, grabbing and HUD;
     /// everyone else's copy of this player is just a body with a name tag.
     /// Movement is owner-authoritative (NetworkTransform set to Owner), so it feels instant.
+    /// The host gives each player the lowest free number (1 to 10), which sets their name and
+    /// color, so someone who leaves and rejoins gets their old number back.
     /// </summary>
     [RequireComponent(typeof(NetworkObject))]
     public class PlayerNetwork : NetworkBehaviour
@@ -40,13 +42,17 @@ namespace MissDirection.Networking
         [SerializeField] Renderer[] tintedRenderers;
         [SerializeField] TextMesh nameLabel;
 
+        // 1 to 10, chosen by the host
+        NetworkVariable<int> playerNumber = new(0);
+
         public static PlayerNetwork Local { get; private set; }
         public static IReadOnlyDictionary<ulong, PlayerNetwork> All => Players;
 
         public PlayerFortunes Fortunes { get; private set; }
         public PlayerGrab Grab { get; private set; }
-        public Color PlayerColor => Palette[(int)(OwnerClientId % (ulong)Palette.Length)];
-        public string DisplayName => $"Player {OwnerClientId + 1}";
+        public int PlayerNumber => playerNumber.Value > 0 ? playerNumber.Value : (int)OwnerClientId + 1;
+        public Color PlayerColor => Palette[(PlayerNumber - 1) % Palette.Length];
+        public string DisplayName => $"Player {PlayerNumber}";
 
         void Awake()
         {
@@ -56,11 +62,25 @@ namespace MissDirection.Networking
 
         public static bool TryGet(ulong clientId, out PlayerNetwork player) => Players.TryGetValue(clientId, out player);
 
+        /// <summary>The lowest player number nobody is using (host side).</summary>
+        public static int LowestFreeNumber(PlayerNetwork ignore = null)
+        {
+            for (int n = 1; n <= 64; n++)
+            {
+                bool taken = false;
+                foreach (var p in Players.Values)
+                    if (p != null && p != ignore && p.playerNumber.Value == n) { taken = true; break; }
+                if (!taken) return n;
+            }
+            return Players.Count + 1;
+        }
+
         public override void OnNetworkSpawn()
         {
+            if (IsServer && playerNumber.Value == 0) playerNumber.Value = LowestFreeNumber(this);
             Players[OwnerClientId] = this;
-            name = $"Player {OwnerClientId + 1}{(IsOwner ? " (you)" : "")}";
-            ApplyColor();
+            playerNumber.OnValueChanged += OnNumberChanged;
+            RefreshIdentity();
 
             if (IsOwner)
             {
@@ -75,16 +95,13 @@ namespace MissDirection.Networking
                 if (localOnlyRoot != null) Destroy(localOnlyRoot);
                 foreach (var b in localOnlyBehaviours)
                     if (b != null) b.enabled = false;
-                if (nameLabel != null)
-                {
-                    nameLabel.text = DisplayName;
-                    nameLabel.color = PlayerColor;
-                }
             }
         }
 
         public override void OnNetworkDespawn()
         {
+            playerNumber.OnValueChanged -= OnNumberChanged;
+
             if (Players.TryGetValue(OwnerClientId, out var current) && current == this)
                 Players.Remove(OwnerClientId);
 
@@ -102,6 +119,19 @@ namespace MissDirection.Networking
             if (IsOwner || nameLabel == null) return;
             var cam = Camera.main;
             if (cam != null) nameLabel.transform.rotation = cam.transform.rotation;
+        }
+
+        void OnNumberChanged(int previous, int current) => RefreshIdentity();
+
+        void RefreshIdentity()
+        {
+            name = $"{DisplayName}{(IsOwner ? " (you)" : "")}";
+            ApplyColor();
+            if (nameLabel != null)
+            {
+                nameLabel.text = DisplayName;
+                nameLabel.color = PlayerColor;
+            }
         }
 
         void ApplyColor()

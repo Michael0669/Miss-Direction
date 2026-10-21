@@ -78,6 +78,7 @@ namespace MissDirection.UI
                 var m = button.Machine;
                 if (m.IsBusy) prompt = "Wait your turn! Madame Direction is reading...";
                 else if (m.HasPressed(LocalId)) prompt = m.HasClaimed(LocalId) ? "You already have your Fortune (R to reset)" : "Take your card first!";
+                else if (m.State == FortuneMachine.MachineState.CardWaiting) prompt = "Wait! Someone's card hasn't been taken yet";
                 else { prompt = "LEFT CLICK  Press the button"; promptActionable = true; }
                 return;
             }
@@ -133,7 +134,7 @@ namespace MissDirection.UI
                 return "Everyone has their Fortune! Try moving around with it.   R to draw again.";
             if (claimed) return $"Fortune received! Waiting for the others ({progress}).";
             if (machine.State == FortuneMachine.MachineState.CardWaiting)
-                return "Someone's card is waiting to be taken. Your turn next!";
+                return "Someone's card is waiting to be taken. Wait until they grab it!";
             return machine.TeamSize > 1
                 ? $"Walk to the Fortune Machine and LEFT CLICK the green button. One at a time! ({progress})"
                 : "Walk to the Fortune Machine (the striped cabinet) and LEFT CLICK the glowing green button.";

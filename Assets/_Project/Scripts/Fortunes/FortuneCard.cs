@@ -27,6 +27,12 @@ namespace MissDirection.Fortunes
         float spawnTime;
         bool requested;
 
+        Transform flyTarget;
+        Vector3 flyStart;
+        Vector3 flyStartScale;
+        float flyStartTime;
+        const float FlySeconds = 0.35f;
+
         public FortuneDefinition Fortune { get; private set; }
         public ulong OwnerClientId { get; private set; }
         public int CardId { get; private set; }
@@ -62,8 +68,33 @@ namespace MissDirection.Fortunes
             }
         }
 
+        /// <summary>Zip into the owner's hands and vanish (the card has been taken).</summary>
+        public void FlyTo(Transform target)
+        {
+            requested = true;
+            flyTarget = target;
+            flyStart = transform.position;
+            flyStartScale = transform.localScale;
+            flyStartTime = Time.time;
+            foreach (var c in GetComponentsInChildren<Collider>()) c.enabled = false;
+        }
+
         void Update()
         {
+            if (flyTarget != null)
+            {
+                float f = Mathf.Clamp01((Time.time - flyStartTime) / FlySeconds);
+                var end = flyTarget.position + Vector3.up * 1.3f;
+                transform.position = Vector3.Lerp(flyStart, end, f * f);
+                transform.localScale = Vector3.Lerp(flyStartScale, flyStartScale * 0.2f, f);
+                if (f >= 1f) Destroy(gameObject);
+                return;
+            }
+            if (flyStartTime > 0f)
+            {
+                Destroy(gameObject); // its owner left mid-flight
+                return;
+            }
             if (body == null || !body.isKinematic) return;
 
             float t = Mathf.Clamp01((Time.time - spawnTime) / Mathf.Max(0.01f, popSeconds));

@@ -9,7 +9,8 @@ namespace MissDirection.Fortunes
 {
     /// <summary>
     /// Madame Direction's cabinet, run by the host. One press at a time: flash red or gold,
-    /// read the fortune, print a card for whoever pressed. Pressing while she's busy shocks you.
+    /// read the fortune, print a card for whoever pressed. Pressing while she's busy, or while
+    /// someone's card is still waiting to be taken, shocks you.
     /// Every player sees the same reading and the same card; only the presser can take it.
     /// The floor's elevator should wait for <see cref="AllCardsClaimed"/>.
     /// </summary>
@@ -24,6 +25,8 @@ namespace MissDirection.Fortunes
         [Header("Timing (target: about 3 seconds per player)")]
         [SerializeField, Min(0f)] float revealSeconds = 0.4f;
         [SerializeField, Min(0f)] float readingSeconds = 2.2f;
+        [Tooltip("A card nobody takes flies to its owner after this long, so the line keeps moving.")]
+        [SerializeField, Min(1f)] float cardTimeoutSeconds = 10f;
 
         [Header("Hooks for lights, sounds and animation (run on every player's game)")]
         public UnityEvent onReadingStarted;
@@ -147,12 +150,14 @@ namespace MissDirection.Fortunes
         {
             ulong presser = rpcParams.Receive.SenderClientId;
 
-            if (busy.Value)
+            if (pressedIds.Contains(presser)) return; // one card per player per floor
+
+            // Wait your turn: she's reading, or the last card hasn't been taken yet.
+            if (busy.Value || openCards.Count > 0)
             {
                 ShockRpc(presser);
                 return;
             }
-            if (pressedIds.Contains(presser)) return; // one card per player per floor
 
             StartCoroutine(ReadFortune(presser));
         }
@@ -183,6 +188,7 @@ namespace MissDirection.Fortunes
                 int cardId = nextCardId++;
                 openCards[cardId] = (presser, fortuneIndex);
                 PrintCardRpc(cardId, fortuneIndex, presser);
+                StartCoroutine(AutoDeliver(cardId, presser));
             }
             else
             {
@@ -193,10 +199,17 @@ namespace MissDirection.Fortunes
             busy.Value = false;
         }
 
-        [Rpc(SendTo.Server)]
-        void ClaimRpc(int cardId, RpcParams rpcParams = default)
+        IEnumerator AutoDeliver(int cardId, ulong owner)
         {
-            ulong sender = rpcParams.Receive.SenderClientId;
+            yield return new WaitForSeconds(cardTimeoutSeconds);
+            if (openCards.ContainsKey(cardId)) Claim(cardId, owner);
+        }
+
+        [Rpc(SendTo.Server)]
+        void ClaimRpc(int cardId, RpcParams rpcParams = default) => Claim(cardId, rpcParams.Receive.SenderClientId);
+
+        void Claim(int cardId, ulong sender)
+        {
             if (!openCards.TryGetValue(cardId, out var card) || card.owner != sender) return;
 
             openCards.Remove(cardId);
@@ -281,9 +294,18 @@ namespace MissDirection.Fortunes
         [Rpc(SendTo.ClientsAndHost)]
         void CardClaimedRpc(int cardId, ulong owner, int fortuneIndex)
         {
-            DestroyLocalCard(cardId);
+            PlayerNetwork.TryGet(owner, out var player);
+
+            // The card flies into its owner's hands, then disappears.
+            if (localCards.TryGetValue(cardId, out var card) && card != null)
+            {
+                if (player != null) card.FlyTo(player.transform);
+                else Destroy(card.gameObject);
+            }
+            localCards.Remove(cardId);
+
             var fortune = GetFortune(fortuneIndex);
-            if (fortune != null && PlayerNetwork.TryGet(owner, out var player) && player.Fortunes != null)
+            if (fortune != null && player != null && player.Fortunes != null)
                 player.Fortunes.Grant(fortune);
         }
 

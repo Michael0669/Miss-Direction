@@ -19,7 +19,14 @@ namespace MissDirection.Player
         [SerializeField] float sprintSpeed = 7.5f;
         [SerializeField] float acceleration = 12f;
         [SerializeField, Range(0f, 1f)] float airControl = 0.35f;
-        [SerializeField] float jumpVelocity = 5.5f;
+        [Tooltip("How high a normal jump goes, in meters.")]
+        [SerializeField] float jumpHeight = 1.4f;
+
+        [Header("Gravity (snappier than real life so jumps don't feel floaty)")]
+        [Tooltip("Gravity multiplier for players. 1 = Unity's default.")]
+        [SerializeField] float gravityMultiplier = 2.2f;
+        [Tooltip("Extra multiplier while falling, so you come down faster than you go up.")]
+        [SerializeField] float fallMultiplier = 1.4f;
         [SerializeField] float groundCheckDistance = 0.15f;
         [SerializeField] LayerMask groundMask = ~0;
 
@@ -126,7 +133,9 @@ namespace MissDirection.Player
                 bool canAirJump = !IsGrounded && jumpsUsed >= 1 && jumpsUsed < allowedJumps;
                 if (IsGrounded || canAirJump)
                 {
-                    velocity.y = jumpVelocity;
+                    // Based on normal gravity, so low-gravity Fortunes (Moonwalker) still leap higher.
+                    float rise = -Physics.gravity.y * gravityMultiplier;
+                    velocity.y = Mathf.Sqrt(2f * Mathf.Max(0.01f, rise) * Mathf.Max(0f, jumpHeight));
                     jumpsUsed = IsGrounded ? 1 : jumpsUsed + 1;
                     lastJumpTime = Time.time;
                 }
@@ -135,7 +144,10 @@ namespace MissDirection.Player
 
             body.linearVelocity = velocity;
 
-            float gravityScale = modifiers.Get(ModifierType.GravityScale);
+            // Unity already applies 1x gravity; add the rest.
+            bool falling = !IsGrounded && velocity.y < 0f;
+            float gravityScale = gravityMultiplier * (falling ? fallMultiplier : 1f)
+                                 * modifiers.Get(ModifierType.GravityScale);
             if (!Mathf.Approximately(gravityScale, 1f))
                 body.AddForce(Physics.gravity * (gravityScale - 1f), ForceMode.Acceleration);
         }
